@@ -1,4 +1,5 @@
 use solana_sdk::{bs58, signer::keypair::Keypair};
+use spl_token_client::client::RpcClientResponse;
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -33,5 +34,17 @@ pub fn get_or_create_keypair(variable_name: &str) -> Result<Keypair, Box<dyn std
 
             Ok(keypair)
         }
+    }
+}
+
+pub fn print_transaction_link(response: RpcClientResponse, message: &str) {
+    match response {
+        RpcClientResponse::Signature(signature) => {
+            println!(
+                "\n{}: https://solana.fm/tx/{}?cluster=localnet-solana",
+                message, signature
+            );
+        }
+        _ => println!("Signature not found in response"),
     }
 }

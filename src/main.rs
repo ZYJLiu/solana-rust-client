@@ -1,5 +1,5 @@
-use serde_json::de;
 // solana-test-validator --bpf-program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb /Users/johnliu/code/misc/solana-program-library/target/deploy/spl_token_2022.so
+use futures::try_join;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
 };
@@ -15,7 +15,6 @@ use solana_sdk::{
     transaction::{Transaction, TransactionError},
     transport::TransportError,
 };
-// use spl_token::state::Mint;
 use spl_token_2022::{
     error::TokenError,
     extension::{
@@ -30,7 +29,7 @@ use spl_token_2022::{
             },
             ConfidentialTransferAccount, ConfidentialTransferMint, MAXIMUM_DEPOSIT_TRANSFER_AMOUNT,
         },
-        BaseStateWithExtensions, ExtensionType,
+        BaseStateWithExtensions, ExtensionType, StateWithExtensionsOwned,
     },
     instruction,
     proof::ProofLocation,
@@ -45,19 +44,21 @@ use spl_token_2022::{
 };
 use spl_token_client::{
     client::{
-        ProgramRpcClient, ProgramRpcClientSendTransaction, SendTransaction, SimulateTransaction,
+        ProgramRpcClient, ProgramRpcClientSendTransaction, RpcClientResponse, SendTransaction,
+        SimulateTransaction,
     },
     proof_generation::transfer_with_fee_split_proof_data,
     token::{self, ExtensionInitializationParams, Token, TokenError as TokenClientError},
 };
 use std::{error::Error, mem::size_of, sync::Arc};
-
 mod utils;
-use utils::get_or_create_keypair;
+use utils::{get_or_create_keypair, print_transaction_link};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
+    let wallet_2 = get_or_create_keypair("wallet_2")?;
+
     let client = RpcClient::new_with_commitment(
         "http://127.0.0.1:8899",
         CommitmentConfig {
@@ -67,6 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Request airdrop for the wallet_1
     client.request_airdrop(&wallet_1.pubkey(), 1_000_000_000 * 5)?;
+    client.request_airdrop(&wallet_2.pubkey(), 1_000_000_000 * 5)?;
 
     let mint = Keypair::new();
     let mint_authority = &wallet_1;
@@ -455,6 +457,223 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // ----------------------------------------------------------
+
+    // Create and Configure a new token account for wallet_2
+    let token_account_2 = Keypair::new();
+    let extensions = vec![ExtensionType::ConfidentialTransferAccount];
+    let space = ExtensionType::try_calculate_account_len::<Account>(&extensions)?;
+    let rent = client.get_minimum_balance_for_rent_exemption(space)?;
+
+    let create_account_instruction = system_instruction::create_account(
+        &wallet_2.pubkey(),
+        &token_account_2.pubkey(),
+        rent,
+        space as u64,
+        &spl_token_2022::id(),
+    );
+
+    let initialize_account_instruction = instruction::initialize_account(
+        &spl_token_2022::id(),
+        &token_account_2.pubkey(),
+        &mint.pubkey(),
+        &wallet_2.pubkey(),
+    )?;
+
+    let instructions = vec![create_account_instruction, initialize_account_instruction];
+
+    let recent_blockhash = client.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &instructions,
+        Some(&wallet_2.pubkey()),
+        &[&wallet_2, &token_account_2],
+        recent_blockhash,
+    );
+
+    let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
+
+    println!(
+        "\nCreate Token Account 2: https://solana.fm/tx/{}?cluster=localnet-solana",
+        transaction_signature
+    );
+
+    let elgamal_keypair =
+        ElGamalKeypair::new_from_signer(&wallet_2, &token_account_2.pubkey().to_bytes()).unwrap();
+    let aes_key = AeKey::new_from_signer(&wallet_2, &token_account_2.pubkey().to_bytes()).unwrap();
+
+    let maximum_pending_balance_credit_counter = 65536; // Default value or custom
+    let decryptable_balance = aes_key.encrypt(0);
+
+    // Create proof data for Pubkey Validity
+    let proof_data = confidential_transfer::instruction::PubkeyValidityData::new(&elgamal_keypair)
+        .map_err(|_| TokenError::ProofGeneration)?;
+
+    // The proof is included in the same transaction of a corresponding token-2022 instruction
+    // Appends the proof instruction right after the `ConfigureAccount` instruction.
+    // This means that the proof instruction offset must be always be 1.
+    let proof_location = ProofLocation::InstructionOffset(1.try_into().unwrap(), &proof_data);
+
+    let configure_account_instruction = confidential_transfer::instruction::configure_account(
+        &spl_token_2022::id(),
+        &token_account_2.pubkey(),
+        &mint.pubkey(),
+        decryptable_balance,
+        maximum_pending_balance_credit_counter,
+        &wallet_2.pubkey(),
+        &[],
+        proof_location, // Proof location (None in this case)
+    )
+    .unwrap();
+
+    let recent_blockhash = client.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &configure_account_instruction,
+        Some(&wallet_2.pubkey()),
+        &[&wallet_2],
+        recent_blockhash,
+    );
+
+    let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
+
+    println!(
+        "\nConfigure Token Account 2: https://solana.fm/tx/{}?cluster=localnet-solana",
+        transaction_signature
+    );
+
+    // ----------------------------------------------------------
+
+    // let mint_info = token_client.get_mint_info().await?;
+    // let auditor_elgamal_pubkey = mint_info.get_extension::<ConfidentialTransferMint>()?;
+
+    // let recipient_token_info = token_client
+    //     .get_account_info(&token_account_2.pubkey())
+    //     .await?;
+
+    // let recipient_elgamal_pubkey = recipient_token_info
+    //     .get_extension::<ConfidentialTransferAccount>()?
+    //     .elgamal_pubkey;
+
+    let context_state_authority = &wallet_1;
+    let equality_proof_context_state_account = Keypair::new();
+    let equality_proof_pubkey = equality_proof_context_state_account.pubkey();
+    let ciphertext_validity_proof_context_state_account = Keypair::new();
+    let ciphertext_validity_proof_pubkey = ciphertext_validity_proof_context_state_account.pubkey();
+    let range_proof_context_state_account = Keypair::new();
+    let range_proof_pubkey = range_proof_context_state_account.pubkey();
+
+    let transfer_context_state_accounts = TransferSplitContextStateAccounts {
+        equality_proof: &equality_proof_pubkey,
+        ciphertext_validity_proof: &ciphertext_validity_proof_pubkey,
+        range_proof: &range_proof_pubkey,
+        authority: &context_state_authority.pubkey(),
+        no_op_on_uninitialized_split_context_state: false,
+        close_split_context_state_accounts: None,
+    };
+
+    // Sender token account
+    let state = token_client
+        .get_account_info(&token_account.pubkey())
+        .await
+        .unwrap();
+    let extension = state
+        .get_extension::<ConfidentialTransferAccount>()
+        .unwrap();
+    let transfer_account_info = TransferAccountInfo::new(extension);
+
+    let transfer_balance = 1000;
+
+    let sender_elgamal_keypair =
+        ElGamalKeypair::new_from_signer(&wallet_1, &token_account.pubkey().to_bytes()).unwrap();
+    let sender_aes_key =
+        AeKey::new_from_signer(&wallet_1, &token_account.pubkey().to_bytes()).unwrap();
+
+    let recipient_elgamal_keypair =
+        ElGamalKeypair::new_from_signer(&wallet_2, &token_account_2.pubkey().to_bytes()).unwrap();
+
+    let (
+        equality_proof_data,
+        ciphertext_validity_proof_data,
+        range_proof_data,
+        source_decrypt_handles,
+    ) = transfer_account_info
+        .generate_split_transfer_proof_data(
+            transfer_balance,
+            &sender_elgamal_keypair,
+            &sender_aes_key,
+            &recipient_elgamal_keypair.pubkey(),
+            Some(auditor_elgamal_keypair.pubkey()),
+        )
+        .unwrap();
+
+    let results = try_join!(
+        token_client.create_range_proof_context_state_for_transfer(
+            transfer_context_state_accounts,
+            &range_proof_data,
+            &range_proof_context_state_account,
+        ),
+        token_client.create_equality_proof_context_state_for_transfer(
+            transfer_context_state_accounts,
+            &equality_proof_data,
+            &equality_proof_context_state_account,
+        ),
+        token_client.create_ciphertext_validity_proof_context_state_for_transfer(
+            transfer_context_state_accounts,
+            &ciphertext_validity_proof_data,
+            &ciphertext_validity_proof_context_state_account,
+        )
+    )?;
+    let (result1, result2, result3) = results;
+    print_transaction_link(result1, "Create equality proof account");
+    print_transaction_link(result2, "Create ciphertext validity proof account");
+    print_transaction_link(result3, "Create for range proof account");
+
+    let signer = Arc::new(wallet_1.insecure_clone()) as Arc<dyn Signer>;
+    let signers = vec![signer];
+    let transfer_result = token_client
+        .confidential_transfer_transfer_with_split_proofs(
+            &token_account.pubkey(),   // sender token account
+            &token_account_2.pubkey(), // recipient token account
+            &wallet_1.pubkey(),        // sender
+            transfer_context_state_accounts,
+            transfer_balance,
+            Some(transfer_account_info),
+            &sender_aes_key,
+            &source_decrypt_handles,
+            &signers,
+        )
+        .await?;
+
+    print_transaction_link(transfer_result, "Transfer Tokens");
+
+    // close context state accounts
+    let context_state_authority_pubkey = context_state_authority.pubkey();
+    let sender = &wallet_1.pubkey();
+    let close_context_state_signers = &[context_state_authority];
+
+    let results = try_join!(
+        token_client.confidential_transfer_close_context_state(
+            &equality_proof_pubkey,
+            sender,
+            &context_state_authority_pubkey,
+            close_context_state_signers,
+        ),
+        token_client.confidential_transfer_close_context_state(
+            &ciphertext_validity_proof_pubkey,
+            sender,
+            &context_state_authority_pubkey,
+            close_context_state_signers,
+        ),
+        token_client.confidential_transfer_close_context_state(
+            &range_proof_pubkey,
+            sender,
+            &context_state_authority_pubkey,
+            close_context_state_signers,
+        ),
+    )?;
+
+    let (result1, result2, result3) = results;
+    print_transaction_link(result1, "Close equality proof account");
+    print_transaction_link(result2, "Close ciphertext validity proof account");
+    print_transaction_link(result3, "Close for range proof account");
 
     // token_client
     //     .process_ixs(
