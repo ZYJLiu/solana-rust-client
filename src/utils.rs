@@ -1,7 +1,4 @@
-use solana_sdk::{
-    bs58,
-    signer::{keypair::Keypair, Signer},
-};
+use solana_sdk::{bs58, signer::keypair::Keypair};
 use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;

@@ -5,9 +5,6 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-[features]
-zk-ops = []
-
 [dependencies]
 solana-sdk = "1.17.10"
 solana-client = "1.17.10"
@@ -17,3 +14,4 @@ spl-token = "4.0.0"
 
 dotenv = "0.15.0" 
 serde_json = "1.0.1"
+tokio = { version = "1", features = ["full"] }

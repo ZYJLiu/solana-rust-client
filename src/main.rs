@@ -1,4 +1,8 @@
-use solana_client::{rpc_client::RpcClient, rpc_config::RpcSendTransactionConfig};
+use serde_json::de;
+// solana-test-validator --bpf-program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb /Users/johnliu/code/misc/solana-program-library/target/deploy/spl_token_2022.so
+use solana_client::{
+    nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
+};
 use solana_sdk::{
     commitment_config::{CommitmentConfig, CommitmentLevel},
     instruction::Instruction,
@@ -17,7 +21,9 @@ use spl_token_2022::{
     extension::{
         confidential_transfer::{
             self,
-            account_info::TransferAccountInfo,
+            account_info::{
+                ApplyPendingBalanceAccountInfo, TransferAccountInfo, WithdrawAccountInfo,
+            },
             instruction::{
                 CloseSplitContextStateAccounts, TransferSplitContextStateAccounts,
                 TransferWithFeeSplitContextStateAccounts,
@@ -38,28 +44,29 @@ use spl_token_2022::{
     state::{Account, Mint},
 };
 use spl_token_client::{
-    client::{SendTransaction, SimulateTransaction},
+    client::{
+        ProgramRpcClient, ProgramRpcClientSendTransaction, SendTransaction, SimulateTransaction,
+    },
     proof_generation::transfer_with_fee_split_proof_data,
     token::{self, ExtensionInitializationParams, Token, TokenError as TokenClientError},
 };
-use std::error::Error;
+use std::{error::Error, mem::size_of, sync::Arc};
 
 mod utils;
 use utils::get_or_create_keypair;
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let client = RpcClient::new_with_commitment(
         "http://127.0.0.1:8899",
-        // "https://api.devnet.solana.com",
-        // "https://localnet.helius-rpc.com/?api-key=86e3ed68-c76b-471e-924f-087410e61f05",
         CommitmentConfig {
             commitment: CommitmentLevel::Confirmed,
         },
     );
 
     // Request airdrop for the wallet_1
-    // client.request_airdrop(&wallet_1.pubkey(), 1_000_000_000 * 5)?;
+    client.request_airdrop(&wallet_1.pubkey(), 1_000_000_000 * 5)?;
 
     let mint = Keypair::new();
     let mint_authority = &wallet_1;
@@ -151,7 +158,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let instructions = vec![create_account_instruction, initialize_account_instruction];
 
-    // let recent_blockhash = client.get_latest_blockhash()?;
+    let recent_blockhash = client.get_latest_blockhash()?;
     let transaction = Transaction::new_signed_with_payer(
         &instructions,
         Some(&wallet_1.pubkey()),
@@ -194,7 +201,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     )
     .unwrap();
 
-    // let recent_blockhash = client.get_latest_blockhash()?;
+    let recent_blockhash = client.get_latest_blockhash()?;
     let transaction = Transaction::new_signed_with_payer(
         &configure_account_instruction,
         Some(&wallet_1.pubkey()),
@@ -211,7 +218,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // ----------------------------------------------------------
 
-    let amount = 100_00;
+    let amount = 100_000_00;
 
     let mint_to_instruction: Instruction = spl_token_2022::instruction::mint_to(
         &spl_token_2022::id(),
@@ -238,20 +245,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // ----------------------------------------------------------
 
-    let amount = 1; // Amount to deposit
+    let deposit_amount = 10_000_00; // Amount to deposit
 
-    // Generate the deposit instruction
     let deposit_instruction = confidential_transfer::instruction::deposit(
         &spl_token_2022::id(),
         &token_account.pubkey(),
         &mint.pubkey(),
-        amount,
+        deposit_amount,
         decimals,
         &wallet_1.pubkey(),
         &[&wallet_1.pubkey()],
     )?;
 
-    // Create a new transaction for the deposit
     let recent_blockhash = client.get_latest_blockhash()?;
     let transaction = Transaction::new_signed_with_payer(
         &[deposit_instruction],
@@ -261,21 +266,216 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
-    // let transaction_signature = client.send_transaction_with_config(
-    //     &transaction,
-    //     RpcSendTransactionConfig {
-    //         skip_preflight: true,
-    //         preflight_commitment: Some(CommitmentLevel::Confirmed),
-    //         encoding: None,
-    //         max_retries: None,
-    //         min_context_slot: None,
-    //     },
-    // )?;
 
     println!(
         "\nDeposit Tokens: https://solana.fm/tx/{}?cluster=localnet-solana",
         transaction_signature
     );
+
+    // ----------------------------------------------------------
+
+    let rpc_client = NonBlockingRpcClient::new_with_commitment(
+        std::string::String::from("http://127.0.0.1:8899"),
+        CommitmentConfig::confirmed(),
+    );
+
+    let program_client =
+        ProgramRpcClient::new(Arc::new(rpc_client), ProgramRpcClientSendTransaction);
+
+    // Set this up to use helper functions
+    let token_client = Token::new(
+        Arc::new(program_client),
+        &spl_token_2022::id(),
+        &mint.pubkey(),
+        Some(decimals),
+        Arc::new(wallet_1.insecure_clone()),
+    );
+
+    // Retrieve token account information.
+    let account = token_client
+        .get_account_info(&token_account.pubkey())
+        .await?;
+
+    // Unpack a portion of the TLV data as the desired type
+    let confidential_transfer_account = account.get_extension::<ConfidentialTransferAccount>()?;
+
+    // Create the `ApplyPendingBalance` instruction account information from `ConfidentialTransferAccount`.
+    let account_info = ApplyPendingBalanceAccountInfo::new(confidential_transfer_account);
+
+    // Return the pending balance credit counter of the account
+    let expected_pending_balance_credit_counter = account_info.pending_balance_credit_counter();
+
+    // Update the decryptable available balance
+    let new_decryptable_available_balance = account_info
+        .new_decryptable_available_balance(&elgamal_keypair.secret(), &aes_key)
+        .map_err(|_| TokenError::AccountDecryption)?;
+
+    // Create a `ApplyPendingBalance` instruction
+    let apply_pending_balance_instruction =
+        confidential_transfer::instruction::apply_pending_balance(
+            &spl_token_2022::id(),
+            &token_account.pubkey(),
+            expected_pending_balance_credit_counter,
+            new_decryptable_available_balance,
+            &wallet_1.pubkey(),
+            &[&wallet_1.pubkey()],
+        )?;
+
+    let recent_blockhash = client.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &[apply_pending_balance_instruction],
+        Some(&wallet_1.pubkey()),
+        &[&wallet_1],
+        recent_blockhash,
+    );
+
+    let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
+
+    println!(
+        "\nApply Pending Balance: https://solana.fm/tx/{}?cluster=localnet-solana",
+        transaction_signature
+    );
+
+    // ----------------------------------------------------------
+
+    let withdraw_amount = 123;
+
+    // Retrieve account information
+    let account = token_client
+        .get_account_info(&token_account.pubkey())
+        .await?;
+
+    //  Unpack a portion of the TLV data as the desired type
+    let confidential_transfer_account = account.get_extension::<ConfidentialTransferAccount>()?;
+    // Create the `WithdrawAccount` instruction account information from `ConfidentialTransferAccount`.
+    let account_info = WithdrawAccountInfo::new(confidential_transfer_account);
+
+    // Create a withdraw proof data
+    let proof_data = account_info
+        .generate_proof_data(withdraw_amount, &elgamal_keypair, &aes_key)
+        .map_err(|_| TokenError::ProofGeneration)?;
+
+    // Keypair for the context state account (account that stores proof data)
+    let context_state_keypair = Keypair::new();
+    let context_state_pubkey = context_state_keypair.pubkey();
+    let context_state_authority = &wallet_1;
+
+    let instruction_type = ProofInstruction::VerifyWithdraw;
+    let space = std::mem::size_of::<ProofContextState<WithdrawProofContext>>();
+    let rent = client.get_minimum_balance_for_rent_exemption(space)?;
+
+    // Pubkeys associated with a context state account to be used as parameters to functions
+    let withdraw_proof_context_state_info = ContextStateInfo {
+        context_state_account: &context_state_pubkey,
+        context_state_authority: &context_state_authority.pubkey(),
+    };
+
+    // Create context state account with space for proof data owned by zk-token-proof-program
+    let create_context_state_instruction = system_instruction::create_account(
+        &wallet_1.pubkey(),
+        &context_state_pubkey,
+        rent,
+        space as u64,
+        &zk_token_proof_program::id(),
+    );
+
+    let recent_blockhash = client.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &[create_context_state_instruction],
+        Some(&wallet_1.pubkey()),
+        &[&wallet_1, &context_state_keypair],
+        recent_blockhash,
+    );
+
+    let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
+
+    println!(
+        "\nCreate Context Account: https://solana.fm/tx/{}?cluster=localnet-solana",
+        transaction_signature
+    );
+
+    // Create a proof instruction with proof data to initialize the context state account
+    let initialize_context_state_instruction =
+        [instruction_type
+            .encode_verify_proof(Some(withdraw_proof_context_state_info), &proof_data)];
+
+    let recent_blockhash = client.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &initialize_context_state_instruction,
+        Some(&wallet_1.pubkey()),
+        &[&wallet_1],
+        recent_blockhash,
+    );
+
+    let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
+
+    println!(
+        "\nInitialize Context Account: https://solana.fm/tx/{}?cluster=localnet-solana",
+        transaction_signature
+    );
+
+    // A proof location type meant to be used for arguments to instruction constructors.
+    // The proof is pre-verified into a context state account.
+    let proof_location = ProofLocation::ContextStateAccount(&context_state_pubkey);
+
+    // Update the decryptable available balance
+    let new_decryptable_available_balance = account_info
+        .new_decryptable_available_balance(withdraw_amount, &aes_key)
+        .map_err(|_| TokenError::AccountDecryption)?;
+
+    // let balance = new_decryptable_available_balance.decrypt(&aes_key);
+    // print!("\nAvailable Balance: {:?}", balance);
+
+    // Create a `Withdraw` instruction
+    let withdraw_instruction = confidential_transfer::instruction::withdraw(
+        &spl_token_2022::id(),
+        &token_account.pubkey(),
+        &mint.pubkey(),
+        withdraw_amount,
+        decimals,
+        new_decryptable_available_balance,
+        &wallet_1.pubkey(),
+        &[&wallet_1.pubkey()],
+        proof_location,
+    )?;
+
+    let recent_blockhash = client.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &withdraw_instruction,
+        Some(&wallet_1.pubkey()),
+        &[&wallet_1],
+        recent_blockhash,
+    );
+
+    let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
+
+    println!(
+        "\nWithdraw Tokens: https://solana.fm/tx/{}?cluster=localnet-solana",
+        transaction_signature
+    );
+
+    // ----------------------------------------------------------
+
+    // token_client
+    //     .process_ixs(
+    //         &[system_instruction::create_account(
+    //             &wallet_1.pubkey(),
+    //             &context_state_pubkey,
+    //             rent,
+    //             space as u64,
+    //             &zk_token_proof_program::id(),
+    //         )],
+    //         &[&context_state_authority, &context_state_keypair],
+    //     )
+    //     .await?;
+
+    // token_client
+    //     .process_ixs(
+    //         &[instruction_type
+    //             .encode_verify_proof(Some(withdraw_proof_context_state_info), &proof_data)],
+    //         &[] as &[&dyn Signer; 0],
+    //     )
+    //     .await?;
 
     Ok(())
 }
