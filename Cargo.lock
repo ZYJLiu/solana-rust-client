@@ -3639,11 +3639,10 @@ name = "solana-client-rust"
 version = "0.1.0"
 dependencies = [
  "dotenv",
- "futures",
  "serde_json",
  "solana-client",
  "solana-sdk",
- "spl-token",
+ "spl-associated-token-account",
  "spl-token-2022 1.0.0",
  "spl-token-client",
  "tokio",
