@@ -48,7 +48,7 @@ use utils::get_or_create_keypair;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // 1. Create Wallets -------------------------------------------------------
+    // 1. Setup -------------------------------------------------------
 
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let wallet_2 = get_or_create_keypair("wallet_2")?;
@@ -69,24 +69,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let decimals = 2;
 
     // Confidential Transfer Extension authority
+    // Authority to modify the `ConfidentialTransferMint` configuration and to
+    // approve new accounts (if `auto_approve_new_accounts` is false?)
     let authority = &wallet_1;
+
     // Auditor ElGamal pubkey
+    // Authority to decode any transfer amount in a confidential transfer
     let auditor_elgamal_keypair = ElGamalKeypair::new_rand();
 
-    let extension_initialization_params =
-        vec![ExtensionInitializationParams::ConfidentialTransferMint {
+    // Confidential Transfer Mint extensions parameters
+    let confidential_transfer_mint_extension =
+        ExtensionInitializationParams::ConfidentialTransferMint {
             authority: Some(authority.pubkey()),
-            auto_approve_new_accounts: true,
+            auto_approve_new_accounts: true, // If `true`, no approval is required and new accounts may be used immediately
             auditor_elgamal_pubkey: Some((*auditor_elgamal_keypair.pubkey()).into()),
-        }];
+        };
 
-    let space = ExtensionType::try_calculate_account_len::<Mint>(
-        &extension_initialization_params
-            .iter()
-            .map(|e| e.extension())
-            .collect::<Vec<_>>(),
-    )?;
+    // Calculate the space required for the mint account with the extension
+    let space = ExtensionType::try_calculate_account_len::<Mint>(&[
+        ExtensionType::ConfidentialTransferMint,
+    ])?;
 
+    // Calculate the lamports required for the mint account
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
 
     // Create the instructions to create the mint account
@@ -98,12 +102,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &spl_token_2022::id(),
     );
 
-    // Instructions for extensions (if multiple extensions are used)
-    let mut extension_instructions = Vec::new();
-    for params in extension_initialization_params {
-        let instr = params.instruction(&spl_token_2022::id(), &mint.pubkey())?;
-        extension_instructions.push(instr);
-    }
+    // ConfidentialTransferMint extension instruction
+    let extension_instruction =
+        confidential_transfer_mint_extension.instruction(&spl_token_2022::id(), &mint.pubkey())?;
 
     // Initialize the mint account
     let initialize_mint_instruction = initialize_mint(
@@ -114,20 +115,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         decimals,
     )?;
 
-    // Create vector of instructions
-    let mut instructions = vec![create_account_instruction];
-    instructions.extend(extension_instructions);
-    instructions.push(initialize_mint_instruction);
+    let instructions = vec![
+        create_account_instruction,
+        extension_instruction,
+        initialize_mint_instruction,
+    ];
 
     let recent_blockhash = client.get_latest_blockhash()?;
-
     let transaction = Transaction::new_signed_with_payer(
         &instructions,
         Some(&wallet_1.pubkey()),
         &[&wallet_1, &mint],
         recent_blockhash,
     );
-
     let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
 
     println!(
@@ -138,8 +138,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 3. Create and Configure Token Account -----------------------------------
 
     let token_account = Keypair::new();
-    let extensions = vec![ExtensionType::ConfidentialTransferAccount];
-    let space = ExtensionType::try_calculate_account_len::<Account>(&extensions)?;
+    let space = ExtensionType::try_calculate_account_len::<Account>(&[
+        ExtensionType::ConfidentialTransferAccount,
+    ])?;
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
 
     // Create the instructions to create the token account
@@ -164,33 +165,41 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ElGamalKeypair::new_from_signer(&wallet_1, &token_account.pubkey().to_bytes()).unwrap();
     let aes_key = AeKey::new_from_signer(&wallet_1, &token_account.pubkey().to_bytes()).unwrap();
 
-    // TODO: what is this?
+    // The maximum number of `Deposit` and `Transfer` instructions that can
+    // credit `pending_balance` before the `ApplyPendingBalance` instruction is executed
     let maximum_pending_balance_credit_counter = 65536;
+
+    // The initial balance is 0
     let decryptable_balance = aes_key.encrypt(0);
 
     // Create proof data for Pubkey Validity
+
+    // Generating the proof data (client-side)
+    // The instruction data that is needed for the `ProofInstruction::VerifyPubkeyValidity` instruction.
+    // It includes the cryptographic proof as well as the context data information needed to verify the proof.
     let proof_data =
         PubkeyValidityData::new(&elgamal_keypair).map_err(|_| TokenError::ProofGeneration)?;
 
-    // The proof is included in the same transaction of a corresponding token-2022 instruction
-    // Appends the proof instruction right after the `ConfigureAccount` instruction.
+    // `InstructionOffset` indicates that proof is included in the same transaction
     // This means that the proof instruction offset must be always be 1.
     let proof_location = ProofLocation::InstructionOffset(1.try_into().unwrap(), &proof_data);
 
     // Instructions to configure the token account, including the proof instruction
+    // Appends the `VerifyPubkeyValidityProof` instruction right after the `ConfigureAccount` instruction.
     let configure_account_instruction = configure_account(
-        &spl_token_2022::id(),
-        &token_account.pubkey(),
-        &mint.pubkey(),
-        decryptable_balance,
-        maximum_pending_balance_credit_counter,
-        &wallet_1.pubkey(),
-        &[],
-        proof_location,
+        &spl_token_2022::id(),                  // Program ID
+        &token_account.pubkey(),                // Token account
+        &mint.pubkey(),                         // Mint
+        decryptable_balance,                    // Initial balance
+        maximum_pending_balance_credit_counter, // Maximum pending balance credit counter
+        &wallet_1.pubkey(),                     // Token Account Owner
+        &[],                                    // Additional signers
+        proof_location,                         // Proof location
     )
     .unwrap();
 
     // Create vector of instructions
+    // Instructions to configure account must come after `initialize_account` instruction
     let mut instructions = vec![create_account_instruction, initialize_account_instruction];
     instructions.extend(configure_account_instruction);
 
@@ -238,8 +247,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // 5. Deposit Tokens -------------------------------------------------------
 
+    // Confidential balance has separate "pending" and "available" balances
+    // Must first deposit tokens from non-confidential balance to "pending" balance
+
     let deposit_amount = 10_000_00; // Amount to deposit
 
+    // Instruction to deposit from non-confidential balance to "pending" balance
     let deposit_instruction = deposit(
         &spl_token_2022::id(),
         &token_account.pubkey(),
@@ -266,9 +279,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // 6. Apply Pending Balance -------------------------------------------------
-    // Apply pending balance for token account, seems like it must be done in a separate transaction
 
-    // Create a new client
+    // "pending" balance must be applied to "available" balance before it can be transferred
+
+    // Create a non-blocking RPC client (for async calls)
     let rpc_client = NonBlockingRpcClient::new_with_commitment(
         String::from("http://127.0.0.1:8899"),
         CommitmentConfig::confirmed(),
@@ -278,7 +292,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let program_client =
         ProgramRpcClient::new(Arc::new(rpc_client), ProgramRpcClientSendTransaction);
 
-    // Create a token client, to use helper functions
+    // Create a "token" client, to use various helper functions for Token Extensions
     let token = Token::new(
         Arc::new(program_client),
         &spl_token_2022::id(),
@@ -290,16 +304,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Retrieve token account information.
     let account = token.get_account_info(&token_account.pubkey()).await?;
 
-    // Unpack a portion of the TLV data as the desired type
+    // Unpack the ConfidentialTransferAccount extension portion of the token account data
     let confidential_transfer_account = account.get_extension::<ConfidentialTransferAccount>()?;
 
-    // Create the `ApplyPendingBalance` instruction account information from `ConfidentialTransferAccount`.
+    // ConfidentialTransferAccount extension information needed to construct an `ApplyPendingBalance` instruction.
     let account_info = ApplyPendingBalanceAccountInfo::new(confidential_transfer_account);
 
     // Return the pending balance credit counter of the account
     let expected_pending_balance_credit_counter = account_info.pending_balance_credit_counter();
 
-    // Update the decryptable available balance
+    // Update the decryptable available balance (add pending balance to available balance)
     let new_decryptable_available_balance = account_info
         .new_decryptable_available_balance(&elgamal_keypair.secret(), &aes_key)
         .map_err(|_| TokenError::AccountDecryption)?;
@@ -309,9 +323,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &spl_token_2022::id(),
         &token_account.pubkey(),
         expected_pending_balance_credit_counter,
-        new_decryptable_available_balance,
-        &wallet_1.pubkey(),
-        &[&wallet_1.pubkey()],
+        new_decryptable_available_balance, // Cipher text of the new decryptable available balance
+        &wallet_1.pubkey(),                // Token account owner
+        &[&wallet_1.pubkey()],             // Additional signers
     )?;
 
     let recent_blockhash = client.get_latest_blockhash()?;
@@ -332,8 +346,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 7. Create Another Token Account -----------------------------------------
 
     let token_account_2 = Keypair::new();
-    let extensions = vec![ExtensionType::ConfidentialTransferAccount];
-    let space = ExtensionType::try_calculate_account_len::<Account>(&extensions)?;
+    let space = ExtensionType::try_calculate_account_len::<Account>(&[
+        ExtensionType::ConfidentialTransferAccount,
+    ])?;
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
 
     let create_account_instruction = create_account(
@@ -401,7 +416,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 8. Prepare proof data ---------------------------------------------------
 
     // Must first create 3 accounts to store proofs before transferring tokens
+    // This must be done in a separate transactions because the proofs are too large for single transaction
 
+    // Equality Proof - prove that two ciphertexts encrypt the same value
+    // Ciphertext Validity Proof - prove that ciphertexts are properly generated
+    // Range Proof - prove that ciphertexts encrypt a value in a specified range (0, u64::MAX)
+
+    // "Authority" for the accounts, to close the accounts after the transfer
     let context_state_authority = &wallet_1;
 
     let equality_proof_context_state_account = Keypair::new();
@@ -432,7 +453,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
     let transfer_account_info = TransferAccountInfo::new(extension);
 
-    let transfer_balance = 1;
+    let transfer_amount = 1;
 
     let sender_elgamal_keypair =
         ElGamalKeypair::new_from_signer(&wallet_1, &token_account.pubkey().to_bytes()).unwrap();
@@ -450,7 +471,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         source_decrypt_handles,
     ) = transfer_account_info
         .generate_split_transfer_proof_data(
-            transfer_balance,
+            transfer_amount,
             &sender_elgamal_keypair,
             &sender_aes_key,
             &recipient_elgamal_keypair.pubkey(),
@@ -461,6 +482,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 9. Create 3 proofs ------------------------------------------------------
 
     // Range Proof ------------------------------------------------------------------------------
+
+    // Range proofs are special types of zero-knowledge proof systems
+    // that allow users to generate a proof `proof` that a ciphertext `ct` encrypts a
+    // value `x` that falls in a specified range `lower_bound`, `upper_bound`
+
+    //   In the confidential extension, we require that a transfer instruction includes
+    //   a range proof that certifies the following:
+
+    //   - The proof should certify that there are enough funds in the source account.
+    //     Specifically, let `ct_source` be the encrypted balance of a source account
+    //     and `ct_transfer` be the encrypted transfer amount. Then we require that
+    //     `ct_source - ct_transfer` encrypts a value `x` such that `0 <= x < u64::MAX`.
+
+    //   - The proof should certify that the transfer amount itself is a positive
+    //     64 bit number. Let `ct_transfer` be the encrypted amount of a transfer. Then
+    //     the proof should certify that `ct_transfer` encrypts a value `x` such that
+    //     `0 <= x < u64::MAX`.
 
     let space = size_of::<ProofContextState<BatchedRangeProofContext>>();
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
@@ -511,11 +549,26 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
 
     println!(
-        "\nVerify Range Proof Context State: https://solana.fm/tx/{}?cluster=localnet-solana",
+        "\nInitialize Range Proof Context State: https://solana.fm/tx/{}?cluster=localnet-solana",
         transaction_signature
     );
 
     // Equality Proof ---------------------------------------------------------------------------
+
+    //     - _Equality proof_: Recall that a transfer instruction contains two ciphertexts
+    //   of the transfer value `x`: a ciphertext under the sender public key
+    //   `ct_sender = PKE::encrypt(pk_sender, x)` and one under the receiver public key
+    //   `ct_receiver = PKE::encrypt(pk_receiver, x)`. A malicious user can encrypt two
+    //   different values for `ct_sender` and `ct_receiver`.
+
+    //   Equality proofs are special types of zero-knowledge proof systems that allow
+    //   users to prove that two ciphertexts `ct_0`, `ct_1` encrypt a same value `x`.
+    //   In the confidential extension program, we require that a transfer instruction
+    //   contains an equality proof that certifies that the two ciphertexts encrypt the
+    //   same value.
+
+    //   The zero-knowledge property guarantees that `proof_eq` does not reveal the
+    //   actual values of `x_0`, `x_1` but only the fact that `x_0 == x_1`.
 
     // Calculate the space required for the account
     let space = size_of::<ProofContextState<CiphertextCommitmentEqualityProofContext>>();
@@ -556,11 +609,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
 
     println!(
-        "\nCreate Equality Proof Context State: https://solana.fm/tx/{}?cluster=localnet-solana",
+        "\nCreate and Initialize Equality Proof Context State: https://solana.fm/tx/{}?cluster=localnet-solana",
         transaction_signature
     );
 
     // Ciphertext Validity Proof ----------------------------------------------------------------
+
+    // Transfer instruction data must include the transfer amount that is encrypted
+    // under the three ElGamal public keys associated with the instruction. To cope
+    // with ElGamal decryption as discussed in the previous section, the transfer
+    // amount is restricted to 48-bit numbers and is encrypted as two separate
+    // numbers: `amount_lo` that represents the low 16-bits and `amount_hi` that
+    // represents the high 32-bits.
+
+    // Each `amount_lo` and `amount_hi` is encrypted under the three ElGamal public
+    // keys associated with a transfer. Instead of including three independent
+    // ciphertexts as part of the transfer data, we use the randomness-reuse property
+    // of ElGamal encryption to minimize the size of ciphertexts.
+
+    // In addition to these ciphertexts, transfer data must include proofs that these
+    // ciphertexts are generated properly. There are two ways that a user can
+    // potentially cheat the program. First a user may provide ciphertexts that are
+    // malformed. For example, even if a user may encrypt the transfer amount under a
+    // wrong public key, there is no way for the program to check the validity of a
+    // ciphertext. Therefore, we require that transfer data require a _ciphertext
+    // validity_ proof that certifies that the ciphertexts are properly generated.
+
+    // Ciphertext validity proof only guarantees that a twisted ElGamal ciphertext is
+    // properly generated. However, it does not certify any property regarding the
+    // encrypted amount in a ciphertext. For example, a malicious user can encrypt
+    // negative values, but there is no way for the program to detect this by simply
+    // inspecting the ciphertext. Therefore, in addition to a ciphertext validity
+    // proof, a transfer instruction must include a _range proof_ that certifies that
+    // the encrypted amounts `amount_lo` and `amount_hi` are positive 16 and 32-bit
+    // values respectively.
 
     let space =
         size_of::<ProofContextState<BatchedGroupedCiphertext2HandlesValidityProofContext>>();
@@ -601,7 +683,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let transaction_signature = client.send_and_confirm_transaction(&transaction)?;
 
     println!(
-        "\nCreate Ciphertext Validity Proof Context State: https://solana.fm/tx/{}?cluster=localnet-solana",
+        "\nCreate and Initialize Ciphertext Validity Proof Context State: https://solana.fm/tx/{}?cluster=localnet-solana",
         transaction_signature
     );
 
@@ -613,7 +695,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Calculate the new decryptable available balance
     let new_decryptable_available_balance = account_info
-        .new_decryptable_available_balance(transfer_balance, &sender_aes_key)
+        .new_decryptable_available_balance(transfer_amount, &sender_aes_key)
         .map_err(|_| TokenError::AccountDecryption)?;
 
     // Create the 'transfer_with_split_proofs' instruction
