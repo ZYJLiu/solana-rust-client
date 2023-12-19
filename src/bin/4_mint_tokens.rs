@@ -1,6 +1,4 @@
 // cargo run --bin 4_mint_tokens
-use std::error::Error;
-
 use keypair_utils::get_or_create_keypair;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -9,9 +7,10 @@ use solana_sdk::{
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::instruction::mint_to;
+use std::error::Error;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+// Mint tokens to the sender associated token account
+fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let mint = get_or_create_keypair("mint")?;
 

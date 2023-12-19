@@ -49,6 +49,10 @@ use keypair_utils::get_or_create_keypair;
 // Ciphertext Validity Proof - prove that ciphertexts are properly generated
 // Range Proof - prove that ciphertexts encrypt a value in a specified range (0, u64::MAX)
 
+// 1. Create the 3 proof accounts
+// 2. Perform the confidential transfer using the 3 proof accounts
+// 3. Close the 3 proof accounts
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;

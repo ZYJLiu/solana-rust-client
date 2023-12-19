@@ -19,8 +19,10 @@ use spl_token_2022::{
 };
 use std::error::Error;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+// Create a recipient associated token account with the `ConfidentialTransferAccount` extension
+// Same process as creating a sender associated token account
+
+fn main() -> Result<(), Box<dyn Error>> {
     let wallet_2 = get_or_create_keypair("wallet_2")?;
     let mint = get_or_create_keypair("mint")?;
 

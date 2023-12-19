@@ -1,6 +1,4 @@
 // cargo run --bin 5_deposit_tokens
-use std::error::Error;
-
 use keypair_utils::get_or_create_keypair;
 use solana_client::rpc_client::RpcClient;
 use solana_sdk::{
@@ -8,9 +6,11 @@ use solana_sdk::{
 };
 use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::extension::confidential_transfer::instruction::deposit;
+use std::error::Error;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+// Confidential balance has separate "pending" and "available" balances
+// Must first deposit tokens from non-confidential balance to "pending" confidential balance
+fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let mint = get_or_create_keypair("mint")?;
 
@@ -19,11 +19,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         CommitmentConfig::confirmed(),
     );
 
-    // Confidential balance has separate "pending" and "available" balances
-    // Must first deposit tokens from non-confidential balance to  "pending" confidential balance
-
-    // Amount to deposit, 50.00 tokens
-    let deposit_amount = 50_00;
+    // Amount to deposit, 100.00 tokens
+    let deposit_amount = 100_00;
     // Mint decimals
     let decimals = 2;
 

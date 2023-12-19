@@ -32,12 +32,8 @@ use std::{error::Error, sync::Arc};
 
 use keypair_utils::get_or_create_keypair;
 
-// Must first create 3 accounts to store proofs before transferring tokens
-// This must be done in a separate transactions because the proofs are too large for single transaction
-
-// Equality Proof - prove that two ciphertexts encrypt the same value
-// Ciphertext Validity Proof - prove that ciphertexts are properly generated
-// Range Proof - prove that ciphertexts encrypt a value in a specified range (0, u64::MAX)
+// The "withdraw" instruction is used to convert the "available" confidential balance back to the non-confidential balance of the token account.
+// This also requires creating a "withdraw proof" account
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {

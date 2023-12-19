@@ -24,6 +24,8 @@ use spl_token_client::{
     token::Token,
 };
 
+// The "pending" balance must be applied to "available" balance before it can be used in confidential transfers
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
@@ -73,7 +75,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let apply_pending_balance_account_info =
         ApplyPendingBalanceAccountInfo::new(confidential_transfer_account);
 
-    // Return the number of times the pending balance has been credited
+    // Return the number of times the pending balance has been credited (deposit or transfer to the account)
     let expected_pending_balance_credit_counter =
         apply_pending_balance_account_info.pending_balance_credit_counter();
 

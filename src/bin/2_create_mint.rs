@@ -12,45 +12,31 @@ use spl_token_2022::{
 use spl_token_client::token::ExtensionInitializationParams;
 use std::error::Error;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+// Create a mint account with the `ConfidentialTransferMint` extension
+fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
+
+    let mint = get_or_create_keypair("mint")?;
+    let decimals = 2;
 
     let client = RpcClient::new_with_commitment(
         String::from("http://127.0.0.1:8899"),
         CommitmentConfig::confirmed(),
     );
 
-    let mint = get_or_create_keypair("mint")?;
-    let mint_authority = &wallet_1;
-    let freeze_authority = &wallet_1;
-    let decimals = 2;
-
-    // Confidential Transfer Extension authority
-    // Authority to modify the `ConfidentialTransferMint` configuration and to approve new accounts (if `auto_approve_new_accounts` is false?)
-    let authority = &wallet_1;
-
-    // Auditor ElGamal pubkey
-    // Authority to decode any transfer amount in a confidential transfer
     let auditor_elgamal_keypair = ElGamalKeypair::new_rand();
-
-    // ConfidentialTransferMint extension parameters
     let confidential_transfer_mint_extension =
         ExtensionInitializationParams::ConfidentialTransferMint {
-            authority: Some(authority.pubkey()),
-            auto_approve_new_accounts: true, // If `true`, no approval is required and new accounts may be used immediately
+            authority: Some(wallet_1.pubkey()),
+            auto_approve_new_accounts: true,
             auditor_elgamal_pubkey: Some((*auditor_elgamal_keypair.pubkey()).into()),
         };
 
-    // Calculate the space required for the mint account with the extension
     let space = ExtensionType::try_calculate_account_len::<Mint>(&[
         ExtensionType::ConfidentialTransferMint,
     ])?;
-
-    // Calculate the lamports required for the mint account
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
 
-    // Instructions to create the mint account
     let create_account_instruction = create_account(
         &wallet_1.pubkey(),
         &mint.pubkey(),
@@ -59,16 +45,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         &spl_token_2022::id(),
     );
 
-    // ConfidentialTransferMint extension instruction
     let extension_instruction =
         confidential_transfer_mint_extension.instruction(&spl_token_2022::id(), &mint.pubkey())?;
 
-    // Initialize the mint account
     let initialize_mint_instruction = initialize_mint(
         &spl_token_2022::id(),
         &mint.pubkey(),
-        &mint_authority.pubkey(),
-        Some(&freeze_authority.pubkey()),
+        &wallet_1.pubkey(),       // Mint authority
+        Some(&wallet_1.pubkey()), // Freeze authority
         decimals,
     )?;
 

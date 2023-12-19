@@ -8,7 +8,6 @@ use spl_associated_token_account::{
     get_associated_token_address_with_program_id, instruction::create_associated_token_account,
 };
 use spl_token_2022::{
-    error::TokenError,
     extension::{confidential_transfer::instruction::configure_account, ExtensionType},
     instruction::reallocate,
     proof::ProofLocation,
@@ -19,8 +18,8 @@ use spl_token_2022::{
 };
 use std::error::Error;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+// Create a sender associated token account with the `ConfidentialTransferAccount` extension
+fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let mint = get_or_create_keypair("mint")?;
 
@@ -71,8 +70,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // The instruction data that is needed for the `ProofInstruction::VerifyPubkeyValidity` instruction.
     // It includes the cryptographic proof as well as the context data information needed to verify the proof.
     // Generating the proof data client-side (instead of using a separate proof account)
-    let proof_data =
-        PubkeyValidityData::new(&elgamal_keypair).map_err(|_| TokenError::ProofGeneration)?;
+    let proof_data = PubkeyValidityData::new(&elgamal_keypair)?;
 
     // `InstructionOffset` indicates that proof is included in the same transaction
     // This means that the proof instruction offset must be always be 1.
@@ -80,6 +78,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Instructions to configure the token account, including the proof instruction
     // Appends the `VerifyPubkeyValidityProof` instruction right after the `ConfigureAccount` instruction.
+    // In this case, the proof is just included as instruction data, but it can also be included in a separate account.
     let configure_account_instruction = configure_account(
         &spl_token_2022::id(),                  // Program ID
         &sender_associated_token_address,       // Token account
