@@ -1,3 +1,4 @@
+// cargo run --bin main
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
 };
@@ -51,8 +52,7 @@ use spl_token_client::{
 };
 use std::{error::Error, mem::size_of, sync::Arc};
 
-mod utils;
-use utils::get_or_create_keypair;
+use keypair_utils::get_or_create_keypair;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -263,7 +263,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Confidential balance has separate "pending" and "available" balances
     // Must first deposit tokens from non-confidential balance to  "pending" confidential balance
 
-    // Amount to deposit, 30.00 tokens
+    // Amount to deposit, 50.00 tokens
     let deposit_amount = 50_00;
 
     // Instruction to deposit from non-confidential balance to "pending" balance

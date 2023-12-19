@@ -1896,6 +1896,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "keypair_utils"
+version = "0.1.0"
+dependencies = [
+ "dotenv",
+ "serde_json",
+ "solana-client",
+ "solana-sdk",
+ "spl-associated-token-account",
+ "spl-token-2022 1.0.0",
+ "spl-token-client",
+ "tokio",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3631,20 +3645,6 @@ dependencies = [
  "solana-tpu-client",
  "solana-udp-client",
  "thiserror",
- "tokio",
-]
-
-[[package]]
-name = "solana-client-rust"
-version = "0.1.0"
-dependencies = [
- "dotenv",
- "serde_json",
- "solana-client",
- "solana-sdk",
- "spl-associated-token-account",
- "spl-token-2022 1.0.0",
- "spl-token-client",
  "tokio",
 ]
 
