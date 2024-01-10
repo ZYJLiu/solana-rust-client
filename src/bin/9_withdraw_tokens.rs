@@ -33,8 +33,7 @@ use std::{error::Error, sync::Arc};
 use keypair_utils::get_or_create_keypair;
 
 // The "withdraw" instruction is used to convert the "available" confidential balance back to the non-confidential balance of the token account.
-// This also requires creating a "withdraw proof" account
-
+// This requires creating a "withdraw proof" account
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
@@ -71,9 +70,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Arc::new(wallet_1.insecure_clone()),
     );
 
-    let withdraw_amount = 20_00;
+    // Amount to withdraw, 10.00 tokens
+    let withdraw_amount = 10_00;
 
-    // Get recipient token account data
+    // Get sender token account data
     let token_account = token
         .get_account_info(&sender_associated_token_address)
         .await?;
@@ -81,10 +81,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Unpack the ConfidentialTransferAccount extension portion of the token account data
     let extension_data = token_account.get_extension::<ConfidentialTransferAccount>()?;
 
-    // Confidential Transfer extension information needed to construct a `Withdraw` instruction.
+    // Confidential Transfer extension data needed to construct a `Withdraw` instruction (available balance,)
     let withdraw_account_info = WithdrawAccountInfo::new(extension_data);
 
-    // Create the ElGamal keypair and AES key for the sender token account
+    // Derive the ElGamal keypair and AES key for the sender token account
     let elgamal_keypair =
         ElGamalKeypair::new_from_signer(&wallet_1, &sender_associated_token_address.to_bytes())
             .unwrap();
@@ -157,8 +157,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let new_decryptable_available_balance =
         withdraw_account_info.new_decryptable_available_balance(withdraw_amount, &aes_key)?;
 
-    // let balance = new_decryptable_available_balance.decrypt(&aes_key);
-    // print!("\nAvailable Balance: {:?}", balance);
+    // Print the available balance before and after the withdraw
+    let prebalance = withdraw_account_info
+        .available_balance
+        .decrypt(&elgamal_keypair.secret());
+
+    let postbalance = new_decryptable_available_balance.decrypt(&aes_key);
+
+    print!("\nAvailable Balance Before: {:?}", prebalance);
+    print!("\nAvailable Balance After: {:?}", postbalance);
 
     // The proof is pre-verified into a context state account.
     let proof_location = ProofLocation::ContextStateAccount(&withdraw_proof_pubkey);

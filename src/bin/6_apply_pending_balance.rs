@@ -1,6 +1,4 @@
 // cargo run --bin 6_apply_pending_balance
-use std::{error::Error, sync::Arc};
-
 use keypair_utils::get_or_create_keypair;
 use solana_client::{
     nonblocking::rpc_client::RpcClient as NonBlockingRpcClient, rpc_client::RpcClient,
@@ -23,9 +21,9 @@ use spl_token_client::{
     client::{ProgramRpcClient, ProgramRpcClientSendTransaction},
     token::Token,
 };
+use std::{error::Error, sync::Arc};
 
-// The "pending" balance must be applied to "available" balance before it can be used in confidential transfers
-
+// The "pending" confidential balance must be applied to "available" balance before it can be used in confidential transfers
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
@@ -71,7 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let confidential_transfer_account =
         token_account_info.get_extension::<ConfidentialTransferAccount>()?;
 
-    // ConfidentialTransferAccount extension information needed to construct an `ApplyPendingBalance` instruction.
+    // ConfidentialTransferAccount extension data needed to construct an `ApplyPendingBalance` instruction.
     let apply_pending_balance_account_info =
         ApplyPendingBalanceAccountInfo::new(confidential_transfer_account);
 
@@ -79,7 +77,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let expected_pending_balance_credit_counter =
         apply_pending_balance_account_info.pending_balance_credit_counter();
 
-    // Create the ElGamal keypair and AES key for the sender token account
+    // Derive the ElGamal keypair and AES key for the sender token account
     let elgamal_keypair =
         ElGamalKeypair::new_from_signer(&wallet_1, &sender_associated_token_address.to_bytes())
             .unwrap();

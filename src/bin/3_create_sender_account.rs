@@ -53,15 +53,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         &[ExtensionType::ConfidentialTransferAccount], // Extension to reallocate space for
     )?;
 
-    // Create the ElGamal keypair and AES key for the sender token account
+    // Derive the ElGamal keypair and AES key for the sender token account
     let elgamal_keypair =
         ElGamalKeypair::new_from_signer(&wallet_1, &sender_associated_token_address.to_bytes())
             .unwrap();
     let aes_key =
         AeKey::new_from_signer(&wallet_1, &sender_associated_token_address.to_bytes()).unwrap();
 
-    // The maximum number of `Deposit` and `Transfer` instructions that can
-    // credit `pending_balance` before the `ApplyPendingBalance` instruction is executed
+    // ElGamal decryption procedure becomes more and more inefficient as the encrypted amount grows.
+    // The encrypted number in the pending balance could grow so large that decryption becomes infeasible.
+    // Set upper bound on the number of incoming `Deposit` and `Transfer` instructions that can
+    // credit `pending_balance` before the `ApplyPendingBalance` instruction must be executed.
     let maximum_pending_balance_credit_counter = 65536;
 
     // Initial token balance is 0
@@ -78,8 +80,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Instructions to configure the token account, including the proof instruction
     // Appends the `VerifyPubkeyValidityProof` instruction right after the `ConfigureAccount` instruction.
-    // In this case, the proof is just included as instruction data, but it can also be included in a separate account.
-    let configure_account_instruction = configure_account(
+    // In this case, the proof is just included as instruction data, but it can also be included using a separate account.
+    let configure_account_instructions = configure_account(
         &spl_token_2022::id(),                  // Program ID
         &sender_associated_token_address,       // Token account
         &mint.pubkey(),                         // Mint
@@ -96,7 +98,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         create_associated_token_account_instruction,
         reallocate_instruction,
     ];
-    instructions.extend(configure_account_instruction);
+    instructions.extend(configure_account_instructions);
 
     let recent_blockhash = client.get_latest_blockhash()?;
     let transaction = Transaction::new_signed_with_payer(

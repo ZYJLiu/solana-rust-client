@@ -16,6 +16,7 @@ use std::error::Error;
 fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
 
+    // Generate a keypair for the mint account saved to .env file
     let mint = get_or_create_keypair("mint")?;
     let decimals = 2;
 
@@ -24,6 +25,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         CommitmentConfig::confirmed(),
     );
 
+    // An option ElGamal keypair for an "auditor" to encrypt/decrypt amounts
+    // In this example, the keypair is not stored anywhere so we won't be using it to decrypt balances
     let auditor_elgamal_keypair = ElGamalKeypair::new_rand();
     let confidential_transfer_mint_extension =
         ExtensionInitializationParams::ConfidentialTransferMint {
@@ -32,11 +35,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             auditor_elgamal_pubkey: Some((*auditor_elgamal_keypair.pubkey()).into()),
         };
 
+    // Calculate the space and lamports required for the mint account with the ConfidentialTransferMint extension
     let space = ExtensionType::try_calculate_account_len::<Mint>(&[
         ExtensionType::ConfidentialTransferMint,
     ])?;
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
 
+    // Instruction to create the mint account
     let create_account_instruction = create_account(
         &wallet_1.pubkey(),
         &mint.pubkey(),
@@ -45,9 +50,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         &spl_token_2022::id(),
     );
 
+    // Instruction to initialize the ConfidentialTransferMint extension
     let extension_instruction =
         confidential_transfer_mint_extension.instruction(&spl_token_2022::id(), &mint.pubkey())?;
 
+    // Instruction to initialize the standard mint account data
     let initialize_mint_instruction = initialize_mint(
         &spl_token_2022::id(),
         &mint.pubkey(),
@@ -62,6 +69,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         initialize_mint_instruction,
     ];
 
+    // Sign and send transaction
     let recent_blockhash = client.get_latest_blockhash()?;
     let transaction = Transaction::new_signed_with_payer(
         &instructions,

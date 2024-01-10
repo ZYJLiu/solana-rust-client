@@ -6,6 +6,7 @@ use solana_sdk::{
 };
 use std::error::Error;
 
+// Create two keypairs saved to .env file (wallet_1 and wallet_2) and airdrop 1 SOL to each
 fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let wallet_2 = get_or_create_keypair("wallet_2")?;

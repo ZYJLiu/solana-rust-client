@@ -21,7 +21,6 @@ use std::error::Error;
 
 // Create a recipient associated token account with the `ConfidentialTransferAccount` extension
 // Same process as creating a sender associated token account
-
 fn main() -> Result<(), Box<dyn Error>> {
     let wallet_2 = get_or_create_keypair("wallet_2")?;
     let mint = get_or_create_keypair("mint")?;
@@ -56,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         &[ExtensionType::ConfidentialTransferAccount],
     )?;
 
-    // Create the ElGamal keypair and AES key for the recipient token account
+    // Derive the ElGamal keypair and AES key for the recipient token account
     let elgamal_keypair =
         ElGamalKeypair::new_from_signer(&wallet_2, &recipient_associated_token_address.to_bytes())
             .unwrap();
@@ -70,12 +69,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proof_data =
         PubkeyValidityData::new(&elgamal_keypair).map_err(|_| TokenError::ProofGeneration)?;
 
-    // The proof is included in the same transaction of a corresponding token-2022 instruction
-    // Appends the proof instruction right after the `ConfigureAccount` instruction.
+    // `InstructionOffset` indicates that proof is included in the same transaction
     // This means that the proof instruction offset must be always be 1.
     let proof_location = ProofLocation::InstructionOffset(1.try_into().unwrap(), &proof_data);
 
-    // Configure account with the proof
+    // Instructions to configure the token account, including the proof instruction
+    // Appends the `VerifyPubkeyValidityProof` instruction right after the `ConfigureAccount` instruction.
+    // In this case, the proof is just included as instruction data, but it can also be included using a separate account.
     let configure_account_instruction = configure_account(
         &spl_token_2022::id(),
         &recipient_associated_token_address,

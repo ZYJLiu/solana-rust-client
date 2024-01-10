@@ -9,7 +9,7 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::instruction::mint_to;
 use std::error::Error;
 
-// Mint tokens to the sender associated token account
+// Mint tokens to the sender associated token account, standard mint_to instruction
 fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let mint = get_or_create_keypair("mint")?;

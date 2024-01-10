@@ -8,8 +8,8 @@ use spl_associated_token_account::get_associated_token_address_with_program_id;
 use spl_token_2022::extension::confidential_transfer::instruction::deposit;
 use std::error::Error;
 
-// Confidential balance has separate "pending" and "available" balances
-// Must first deposit tokens from non-confidential balance to "pending" confidential balance
+// Token accounts with Confidential extension enabled have separate "pending" and "available" balances
+// Token account owner must first "deposit" tokens from non-confidential balance to "pending" confidential balance
 fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let mint = get_or_create_keypair("mint")?;
@@ -19,8 +19,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         CommitmentConfig::confirmed(),
     );
 
-    // Amount to deposit, 100.00 tokens
-    let deposit_amount = 100_00;
+    // Amount to deposit, 100,000.00 tokens
+    let deposit_amount = 100_000_00;
     // Mint decimals
     let decimals = 2;
 

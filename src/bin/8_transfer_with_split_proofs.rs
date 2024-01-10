@@ -42,17 +42,17 @@ use std::{error::Error, mem::size_of, sync::Arc};
 
 use keypair_utils::get_or_create_keypair;
 
-// Must first create 3 accounts to store proofs before transferring tokens
+// Must first create 3 accounts to store proofs before sending the confidential transfer
 // This must be done in a separate transactions because the proofs are too large for single transaction
+// (range proof requires two separate transactions because the proof instruction is too large)
 
-// Equality Proof - prove that two ciphertexts encrypt the same value
-// Ciphertext Validity Proof - prove that ciphertexts are properly generated
-// Range Proof - prove that ciphertexts encrypt a value in a specified range (0, u64::MAX)
+// Equality Proof - prove that ciphertexts encrypt the same value
+// Ciphertext Validity Proof - prove that ciphertext is properly encrypted with the correct public key (one for the sender, one for the receiver, one for the auditor)
+// Range Proof - prove that ciphertexts encrypt a value in a specified range (0, u64::MAX), (positive amount, enough tokens to send)
 
 // 1. Create the 3 proof accounts
 // 2. Perform the confidential transfer using the 3 proof accounts
 // 3. Close the 3 proof accounts
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let wallet_1 = get_or_create_keypair("wallet_1")?;
@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         CommitmentConfig::confirmed(),
     );
 
-    // A "non-blocking" RPC client (for async calls)
+    // A "non-blocking" RPC client (for async calls), used to set up the "token" client
     let rpc_client = NonBlockingRpcClient::new_with_commitment(
         String::from("http://127.0.0.1:8899"),
         CommitmentConfig::confirmed(),
@@ -100,19 +100,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // "Authority" for the proof accounts (to close the accounts after the transfer)
     let context_state_authority = &wallet_1;
 
-    // Generate address for equality proof account
+    // Generate keypair to use as address for equality proof account
     let equality_proof_context_state_account = Keypair::new();
     let equality_proof_pubkey = equality_proof_context_state_account.pubkey();
 
-    // Generate address for ciphertext validity proof account
+    // Generate keypair to use as address for ciphertext validity proof account
     let ciphertext_validity_proof_context_state_account = Keypair::new();
     let ciphertext_validity_proof_pubkey = ciphertext_validity_proof_context_state_account.pubkey();
 
-    // Generate address for range proof account
+    // Generate keypair to use as address for range proof account
     let range_proof_context_state_account = Keypair::new();
     let range_proof_pubkey = range_proof_context_state_account.pubkey();
 
-    // Type for split transfer (without fee) instruction proof context state account addresses intended to be used as parameters to functions.
+    // Required for transfer_with_split_proofs instruction
     let transfer_context_state_accounts = TransferSplitContextStateAccounts {
         equality_proof: &equality_proof_pubkey,
         ciphertext_validity_proof: &ciphertext_validity_proof_pubkey,
@@ -127,13 +127,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .get_account_info(&sender_associated_token_address)
         .await?;
 
+    // Get the confidential transfer extension data from the token account data
     let extension_data = token_account_info.get_extension::<ConfidentialTransferAccount>()?;
 
-    // ConfidentialTransferAccount extension information needed to create proof data
+    // confidential transfer extension data needed to create proof data for the transfer (available balance)
     let transfer_account_info = TransferAccountInfo::new(extension_data);
 
-    let transfer_amount = 30_00;
+    // 100.00 tokens to transfer
+    let transfer_amount = 100_00;
 
+    // Derive the ElGamal keypair and AES key for the sender token account
     let sender_elgamal_keypair =
         ElGamalKeypair::new_from_signer(&wallet_1, &sender_associated_token_address.to_bytes())?;
     let sender_aes_key =
@@ -145,6 +148,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
 
     // Get recipient ElGamal pubkey from the recipient token account data and convert to elgamal::ElGamalPubkey
+    // Used to encrypt the transfer amount under the recipient ElGamal pubkey
     let recipient_elgamal_pubkey: elgamal::ElGamalPubkey =
         StateWithExtensionsOwned::<Account>::unpack(recipient_account.data)?
             .get_extension::<ConfidentialTransferAccount>()?
@@ -155,6 +159,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mint_account = token.get_account(mint.pubkey()).await?;
 
     // Get auditor ElGamal pubkey from the mint account data
+    // Used to encrypt the transfer amount under the auditor ElGamal pubkey
     let auditor_elgamal_pubkey_option = Option::<ElGamalPubkey>::from(
         StateWithExtensionsOwned::<Mint>::unpack(mint_account.data)?
             .get_extension::<ConfidentialTransferMint>()?
@@ -166,7 +171,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .ok_or("No Auditor ElGamal pubkey")?
         .try_into()?;
 
-    // Generate proof data
+    // Generate proof data required for proof accounts to use in the transfer instruction
     let (
         equality_proof_data,
         ciphertext_validity_proof_data,
@@ -213,7 +218,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // Instruction to initialize account with proof data
-    // Sent as separate transaction because proof instruction too large
+    // Sent as separate transaction because range proof instruction too large
     let verify_proof_instruction = ProofInstruction::VerifyBatchedRangeProofU128
         .encode_verify_proof(
             Some(ContextStateInfo {
@@ -285,6 +290,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Ciphertext Validity Proof ----------------------------------------------------------------
 
+    // Calculate the space required for the account
     let space =
         size_of::<ProofContextState<BatchedGroupedCiphertext2HandlesValidityProofContext>>();
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
@@ -328,17 +334,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             transaction_signature
         );
 
-    // Get sender token account data
-    let token_account_info = token
-        .get_account_info(&sender_associated_token_address)
-        .await?;
+    // Confidential Transfer with Split Proofs ---------------------------------------------------------------
 
-    let extension_data = token_account_info.get_extension::<ConfidentialTransferAccount>()?;
-
-    // ConfidentialTransferAccount extension information needed to create proof data
-    let transfer_account_info = TransferAccountInfo::new(extension_data);
-
-    // Calculate the new decryptable available balance
+    // Calculate the new decryptable available balance for the sender token account
+    // deducts the transfer amount from the available balance, and recalculates the new decryptable available balance
     let new_decryptable_available_balance = transfer_account_info
         .new_decryptable_available_balance(transfer_amount, &sender_aes_key)?;
 

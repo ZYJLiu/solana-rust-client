@@ -56,7 +56,7 @@ use keypair_utils::get_or_create_keypair;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // 1. Create sender and recipient wallets -----------------------------------
+    // 1. Create sender and recipient wallet keypairs -----------------------------------
 
     let wallet_1 = get_or_create_keypair("wallet_1")?;
     let wallet_2 = get_or_create_keypair("wallet_2")?;
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let authority = &wallet_1;
 
     // Auditor ElGamal pubkey
-    // Authority to decode any transfer amount in a confidential transfer
+    // Authority to decrypt any encrypted amounts for the mint
     let auditor_elgamal_keypair = ElGamalKeypair::new_rand();
 
     // ConfidentialTransferMint extension parameters
@@ -485,7 +485,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // ConfidentialTransferAccount extension information needed to create proof data
     let transfer_account_info = TransferAccountInfo::new(extension_data);
 
-    let transfer_amount = 30_00;
+    let transfer_amount = 50_00;
 
     let sender_elgamal_keypair =
         ElGamalKeypair::new_from_signer(&wallet_1, &sender_associated_token_address.to_bytes())?;
@@ -538,23 +538,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // 9. Create 3 proofs ------------------------------------------------------
 
     // Range Proof ------------------------------------------------------------------------------
-
-    // Range proofs are special types of zero-knowledge proof systems
-    // that allow users to generate a proof `proof` that a ciphertext `ct` encrypts a
-    // value `x` that falls in a specified range `lower_bound`, `upper_bound`
-
-    //   In the confidential extension, we require that a transfer instruction includes
-    //   a range proof that certifies the following:
-
-    //   - The proof should certify that there are enough funds in the source account.
-    //     Specifically, let `ct_source` be the encrypted balance of a source account
-    //     and `ct_transfer` be the encrypted transfer amount. Then we require that
-    //     `ct_source - ct_transfer` encrypts a value `x` such that `0 <= x < u64::MAX`.
-
-    //   - The proof should certify that the transfer amount itself is a positive
-    //     64 bit number. Let `ct_transfer` be the encrypted amount of a transfer. Then
-    //     the proof should certify that `ct_transfer` encrypts a value `x` such that
-    //     `0 <= x < u64::MAX`.
 
     // space and rent required for range proof account
     let space = size_of::<ProofContextState<BatchedRangeProofContext>>();
@@ -612,21 +595,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Equality Proof ---------------------------------------------------------------------------
 
-    //     - _Equality proof_: Recall that a transfer instruction contains two ciphertexts
-    //   of the transfer value `x`: a ciphertext under the sender public key
-    //   `ct_sender = PKE::encrypt(pk_sender, x)` and one under the receiver public key
-    //   `ct_receiver = PKE::encrypt(pk_receiver, x)`. A malicious user can encrypt two
-    //   different values for `ct_sender` and `ct_receiver`.
-
-    //   Equality proofs are special types of zero-knowledge proof systems that allow
-    //   users to prove that two ciphertexts `ct_0`, `ct_1` encrypt a same value `x`.
-    //   In the confidential extension program, we require that a transfer instruction
-    //   contains an equality proof that certifies that the two ciphertexts encrypt the
-    //   same value.
-
-    //   The zero-knowledge property guarantees that `proof_eq` does not reveal the
-    //   actual values of `x_0`, `x_1` but only the fact that `x_0 == x_1`.
-
     // Calculate the space required for the account
     let space = size_of::<ProofContextState<CiphertextCommitmentEqualityProofContext>>();
     let rent = client.get_minimum_balance_for_rent_exemption(space)?;
@@ -671,35 +639,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         );
 
     // Ciphertext Validity Proof ----------------------------------------------------------------
-
-    // Transfer instruction data must include the transfer amount that is encrypted
-    // under the three ElGamal public keys associated with the instruction. To cope
-    // with ElGamal decryption as discussed in the previous section, the transfer
-    // amount is restricted to 48-bit numbers and is encrypted as two separate
-    // numbers: `amount_lo` that represents the low 16-bits and `amount_hi` that
-    // represents the high 32-bits.
-
-    // Each `amount_lo` and `amount_hi` is encrypted under the three ElGamal public
-    // keys associated with a transfer. Instead of including three independent
-    // ciphertexts as part of the transfer data, we use the randomness-reuse property
-    // of ElGamal encryption to minimize the size of ciphertexts.
-
-    // In addition to these ciphertexts, transfer data must include proofs that these
-    // ciphertexts are generated properly. There are two ways that a user can
-    // potentially cheat the program. First a user may provide ciphertexts that are
-    // malformed. For example, even if a user may encrypt the transfer amount under a
-    // wrong public key, there is no way for the program to check the validity of a
-    // ciphertext. Therefore, we require that transfer data require a _ciphertext
-    // validity_ proof that certifies that the ciphertexts are properly generated.
-
-    // Ciphertext validity proof only guarantees that a twisted ElGamal ciphertext is
-    // properly generated. However, it does not certify any property regarding the
-    // encrypted amount in a ciphertext. For example, a malicious user can encrypt
-    // negative values, but there is no way for the program to detect this by simply
-    // inspecting the ciphertext. Therefore, in addition to a ciphertext validity
-    // proof, a transfer instruction must include a _range proof_ that certifies that
-    // the encrypted amounts `amount_lo` and `amount_hi` are positive 16 and 32-bit
-    // values respectively.
 
     let space =
         size_of::<ProofContextState<BatchedGroupedCiphertext2HandlesValidityProofContext>>();
@@ -841,7 +780,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         transaction_signature
     );
 
-    // --------------------------------------------------------------------------
+    // 12. Withdraw Tokens ------------------------------------------------------
 
     let withdraw_amount = 20_00;
 
